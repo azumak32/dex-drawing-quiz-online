@@ -462,7 +462,9 @@ var Online = (function () {
   }
 
   function normCode(s) {
-    return String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, CODE_LEN);
+    return String(s || '')
+      .replace(/[Ａ-Ｚａ-ｚ０-９]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0xFEE0); })   // 全角 → 半角
+      .toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, CODE_LEN);
   }
 
   function myPid() {
@@ -1179,10 +1181,24 @@ var Online = (function () {
         join(codeInput.value, nameInput.value);
       });
     });
-    codeInput.addEventListener('input', function () {
-      var v = normCode(codeInput.value);
-      if (v !== codeInput.value) codeInput.value = v;
+    /* 大文字にそろえ、英数字以外を消す。
+       ただし日本語入力の変換中に書き換えると、確定のときに同じ文字がもう一度入る
+       （iPad で「abc」が「AABABC」になった）。変換中は触らず、確定してからそろえる。 */
+    var composing = false;
+    function tidyCode() {
+      var raw = codeInput.value;
+      var v = normCode(raw);
+      if (v !== raw) codeInput.value = v;
+      // ローマ字入力のまま打つと「か」などになって消えてしまうので、黙って消さずに知らせる
+      if (/[ぁ-ゖァ-ヶ]/.test(raw)) setStatus('部屋コードは英数字です。キーボードを英字（ABC）に切り替えて入れてください。', true);
+    }
+    codeInput.addEventListener('compositionstart', function () { composing = true; });
+    codeInput.addEventListener('compositionend', function () { composing = false; tidyCode(); });
+    codeInput.addEventListener('input', function (e) {
+      if (composing || e.isComposing) return;
+      tidyCode();
     });
+    codeInput.addEventListener('blur', tidyCode);
     $id('btnOnlineCopyUrl').addEventListener('click', function () {
       copyText(roomUrl(), '参加用 URL をコピーしました');
     });
