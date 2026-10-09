@@ -3,7 +3,10 @@
    ========================================================= */
 
 /* ---------------- 画面遷移 ---------------- */
-var SCREENS = ['s1', 's15', 's2', 's3', 's4', 's5', 's6', 's7', 's8'];
+var SCREENS = ['s1', 's15', 's2', 's3', 's4', 's5', 's6', 's7', 's8', 's9'];
+
+/* オンラインプレイ（js/online.js・公開版だけ）。読み込んでいない版では null のまま何もしない。 */
+var ON = (typeof Online !== 'undefined') ? Online : null;
 
 function showScreen(id) {
   SCREENS.forEach(function (s) {
@@ -14,6 +17,7 @@ function showScreen(id) {
   window.scrollTo(0, 0);
   setTopStatus();
   saveState();
+  if (ON) ON.hostBroadcast();   // 親なら、子の画面もこれに合わせる
 }
 
 /* ゲームの進行に属さない画面（図鑑ビューア・累積ランキング）。
@@ -183,6 +187,8 @@ function renderPlayers() {
     input.maxLength = 12;
     input.autocomplete = 'off';
     input.enterKeyHint = 'done';
+    // オンラインの人の名前は、その人が自分の端末で入れたもの。親の端末では変えない
+    input.readOnly = !!p.online;
     input.addEventListener('input', function () {
       p.name = input.value;
       saveState();
@@ -190,19 +196,13 @@ function renderPlayers() {
     });
     row.appendChild(input);
 
-    var toggle = document.createElement('button');
-    toggle.type = 'button';
-    toggle.className = 'remote-toggle' + (p.remote ? ' is-on' : '');
-    toggle.innerHTML = (p.remote ? '📡 リモート' : 'リモート');
-    toggle.addEventListener('click', function () {
-      p.remote = !p.remote;
-      toggle.classList.toggle('is-on', p.remote);
-      toggle.innerHTML = (p.remote ? '📡 リモート' : 'リモート');
-      beep('tap');
-      saveState();
-      saveRoster();
-    });
-    row.appendChild(toggle);
+    if (p.online) {
+      var on = ON && ON.isConnected(p.id);
+      var badge = document.createElement('span');
+      badge.className = 'online-badge' + (on ? ' is-on' : '');
+      badge.textContent = on ? '🌐 オンライン' : '🌐 切断中';
+      row.appendChild(badge);
+    }
 
     var del = document.createElement('button');
     del.type = 'button';
@@ -210,6 +210,7 @@ function renderPlayers() {
     del.textContent = '×';
     del.setAttribute('aria-label', (i + 1) + '人目を削除');
     del.addEventListener('click', function () {
+      if (p.online && ON) ON.kick(p.id);
       State.players.splice(i, 1);
       if (!State.players.length) State.players.push(makePlayer(''));
       State.order = [];
@@ -224,6 +225,19 @@ function renderPlayers() {
   $id('btnAddPlayer').disabled = State.players.length >= MAX_PLAYERS;
   saveState();
   saveRoster();
+  if (ON) ON.hostBroadcast();   // 子の待合室の参加者一覧を更新する
+}
+
+/* ゲームに参加できる人（名前があり、オンラインの人はいまつながっている人） */
+function gamePlayers() {
+  return activePlayers().filter(function (p) {
+    return !p.online || (ON && ON.isConnected(p.id));
+  });
+}
+
+function isOnlinePlayer(id) {
+  var p = id ? playerById(id) : null;
+  return !!(p && p.online);
 }
 
 /* ---------- サイコロ（出題順を決める） ---------- */
@@ -231,7 +245,7 @@ var DICE_FACES = ['\u2680', '\u2681', '\u2682', '\u2683', '\u2684', '\u2685'];
 var diceRolling = false;
 
 function rollDice() {
-  var ps = activePlayers();
+  var ps = gamePlayers();
   if (ps.length < 2) {
     toast('名前を2人以上入れてください');
     return;
@@ -262,7 +276,7 @@ function showOrder() {
   var el = $id('orderResult');
   if (!State.order.length) { el.hidden = true; return; }
   var list = State.order.map(function (id, i) {
-    return (i + 1) + '. ' + playerName(id) + (playerById(id).remote ? '（リモート）' : '');
+    return (i + 1) + '. ' + playerName(id) + (isOnlinePlayer(id) ? '（オンライン）' : '');
   }).join('　/　');
   el.innerHTML = '出題の順番<br>' + list +
     '<br>さいしょの出題者は <b>' + playerName(State.order[0]) + '</b> さん！';
@@ -307,7 +321,7 @@ function startGame(quick) {
     State.order = ['__quick__'];
     State.players = State.players; // そのまま
   } else if (State.settings.mode === 'vs') {
-    var ps = activePlayers();
+    var ps = gamePlayers();
     if (ps.length < 2) {
       toast('対戦モードは2人以上の名前が必要です');
       openPlayerPanel();
@@ -320,7 +334,7 @@ function startGame(quick) {
     }
   } else {
     // 協力モード：出題者を1人ずつ回す（名前があればその人数、無ければ1問）
-    var cps = activePlayers();
+    var cps = gamePlayers();
     State.order = cps.length ? shuffle(cps.map(function (p) { return p.id; })) : ['__quick__'];
   }
 
@@ -342,6 +356,7 @@ function startGame(quick) {
   State.drawing = null;
   State.answers = [];
   State.answerIndex = 0;
+  State.onlineWait = {};
   State.scores = {};
   State.coop = { total: 0, correct: 0 };
   State.finished = false;
@@ -407,12 +422,24 @@ function renderDrawScreen() {
     drawerId === '__quick__' ? 'あなた' : playerName(drawerId);
   $id('turnCount').textContent = (State.round + 1) + ' / ' + State.order.length + ' 問目';
   $id('flavorMeta').textContent = 'ポケットモンスター ' + q.versionJa + ' より';
-  $id('flavorText').textContent = q.flavorMasked;
+
+  // 出題者がオンラインの人なら、その人の端末で描く。親の端末には解説文を出さない
+  var remote = isOnlinePlayer(drawerId);
+  $id('s2').classList.toggle('is-remote-draw', remote);
+  if (remote) {
+    $id('flavorText').textContent = '';
+    $id('remoteDrawText').textContent = (ON && ON.isConnected(drawerId))
+      ? playerName(drawerId) + ' さんが自分の端末で描いています'
+      : playerName(drawerId) + ' さんとの接続が切れています。つなぎ直すのを待っています';
+  } else {
+    $id('flavorText').textContent = q.flavorMasked;
+  }
   setTopStatus();
 }
 
 /* お絵描き完了 → クイズ画面へ */
 function finishDrawing() {
+  if (ON && ON.isGuest()) { ON.guestFinishDrawing(); return; }
   if (DrawPad.isBlank()) {
     toast('まだ何も描かれていません');
     return;
@@ -429,15 +456,26 @@ function finishDrawing() {
    ========================================================= */
 
 /* このラウンドの解答者一覧を決める。
-   協力モード／すぐに始める → 1回だけ（playerId は null）
-   対戦モード → 出題者以外の全員 */
+   協力モード／すぐに始める → この端末の「みんな」が1回（playerId は null）
+   対戦モード → 出題者以外の全員
+   オンラインの人は自分の端末で同時に答える（協力モードでも1人1回）。 */
 function computeAnswerers() {
   var drawerId = State.order[State.round];
-  if (State.settings.mode !== 'vs' || drawerId === '__quick__') return [null];
-  return activePlayers()
-    .filter(function (p) { return p.id !== drawerId; })
-    .map(function (p) { return p.id; });
+  var onlineOthers = gamePlayers().filter(function (p) {
+    return p.online && p.id !== drawerId;
+  }).map(function (p) { return p.id; });
+
+  if (State.settings.mode !== 'vs' || drawerId === '__quick__') {
+    // この端末で描いた人のほかに、この端末で答える人がいないなら「みんな」の枠は作らない
+    var localOthers = activePlayers().some(function (p) { return !p.online && p.id !== drawerId; });
+    var list = (isOnlinePlayer(drawerId) || localOthers || !onlineOthers.length) ? [null] : [];
+    return list.concat(onlineOthers);
+  }
+  // 対戦モード：ゲーム開始時に順番に入っていた人だけ（途中から入った人は見学）
+  return State.order.filter(function (id) { return id !== drawerId && playerById(id); });
 }
+
+var onlineAnswerTimer = null;
 
 function goToQuiz() {
   $id('quizImage').src = State.drawing || '';
@@ -445,26 +483,63 @@ function goToQuiz() {
   State.answerers = computeAnswerers();
   State.answerIndex = 0;
   State.answers = [];
+
+  // オンラインの人には一斉に解答してもらう。つながっていない人はその場で無回答
+  State.onlineWait = {};
+  State.answerers.forEach(function (id) {
+    if (!isOnlinePlayer(id)) return;
+    if (ON && ON.isConnected(id)) State.onlineWait[id] = true;
+    else pushAnswer(id, '');
+  });
+  clearTimeout(onlineAnswerTimer);
+  if (State.settings.timer && Object.keys(State.onlineWait).length) {
+    // 子の端末も同じ秒数で締め切って送ってくる。届かなければ少し待ってから無回答にする
+    var round = State.round;
+    onlineAnswerTimer = setTimeout(function () {
+      if (State.screen === 's3' && State.round === round) giveUpOnlineAnswers();
+    }, (timerSec('answer') + 8) * 1000);
+  }
   saveState();
   nextAnswerer();
 }
 
+function pushAnswer(pid, text) {
+  var q = State.quiz[State.round];
+  var value = String(text || '');
+  State.answers.push({
+    playerId: pid,
+    text: value.trim(),
+    correct: q ? judgeAnswer(value, q.nameJa) : false,
+    manual: false
+  });
+}
+
+/* この端末で答える人（オンラインでない人）の残り */
+function localAnswerersLeft() {
+  var list = State.answerers || [];
+  var n = 0;
+  for (var i = State.answerIndex; i < list.length; i++) if (!isOnlinePlayer(list[i])) n++;
+  return n;
+}
+
 function nextAnswerer() {
   var list = State.answerers || [];
+  // オンラインの人は自分の端末で答えるので、この端末の順番からは外す
+  while (State.answerIndex < list.length && isOnlinePlayer(list[State.answerIndex])) State.answerIndex++;
   if (State.answerIndex >= list.length) {
-    showReveal();
+    finishAnswers();
     return;
   }
   var pid = list[State.answerIndex];
-  var isLast = State.answerIndex === list.length - 1;
+  var isLast = localAnswerersLeft() === 1;
+  var localCount = list.filter(function (id) { return !isOnlinePlayer(id); }).length;
 
+  $id('s3').classList.remove('is-waiting');
   $id('answerInput').value = '';
   $id('btnAnswerNext').textContent = isLast ? 'こたえあわせ！' : '次の人へ';
 
   if (pid) {
-    var p = playerById(pid);
-    var proxy = p && p.remote ? '<span class="proxy">（代理入力）</span>' : '';
-    $id('answererLabel').innerHTML = playerName(pid) + ' さんのこたえ' + proxy;
+    $id('answererLabel').textContent = playerName(pid) + ' さんのこたえ';
   } else {
     $id('answererLabel').textContent = 'みんなのこたえ';
   }
@@ -472,14 +547,11 @@ function nextAnswerer() {
   showScreen('s3');
 
   // 対戦モードは、前の人の答えが見えないようにインタースティシャルを挟む
-  if (pid && list.length > 1) {
-    var pl = playerById(pid);
+  if (pid && localCount > 1) {
     showInterstitial(
       playerName(pid),
       'さんの番です',
-      pl && pl.remote
-        ? 'ビデオ通話の参加者です。口頭の解答をホストが代理入力してください。'
-        : 'ほかの人は画面を見ないでください。',
+      'ほかの人は画面を見ないでください。',
       function () {
         startAnswerTimer();
         focusAnswerInput();
@@ -492,6 +564,18 @@ function nextAnswerer() {
   saveState();
 }
 
+/* この端末の解答が終わった。オンラインの人の解答がそろうまで待つ */
+function finishAnswers() {
+  var waiting = Object.keys(State.onlineWait || {});
+  if (!waiting.length) { showReveal(); return; }
+  stopAnswerTimer();
+  $id('s3').classList.add('is-waiting');
+  $id('onlineWaitText').textContent =
+    'オンラインの人の解答を待っています：' + waiting.map(playerName).join('、');
+  if (State.screen !== 's3') showScreen('s3');
+  else { saveState(); if (ON) ON.hostBroadcast(); }
+}
+
 function focusAnswerInput() {
   // iPad で日本語キーボードが自然に出るよう、画面表示後に少し遅らせる
   setTimeout(function () {
@@ -502,19 +586,12 @@ function focusAnswerInput() {
 
 /* 解答を確定して次へ */
 function submitAnswer(text) {
+  var value = (text === undefined ? $id('answerInput').value : text) || '';
+  if (ON && ON.isGuest()) { stopAnswerTimer(); ON.guestAnswer(value); return; }
   stopAnswerTimer();
-  var q = State.quiz[State.round];
   var list = State.answerers || [];
   var pid = list[State.answerIndex] || null;
-  var value = (text === undefined ? $id('answerInput').value : text) || '';
-  var ok = q ? judgeAnswer(value, q.nameJa) : false;
-
-  State.answers.push({
-    playerId: pid,
-    text: value.trim(),
-    correct: ok,
-    manual: false
-  });
+  pushAnswer(pid, value);
   State.answerIndex++;
   saveState();
   beep('tap');
@@ -527,10 +604,58 @@ function submitAnswer(text) {
 
 function showReveal() {
   stopAnswerTimer();
+  clearTimeout(onlineAnswerTimer);
+  $id('s3').classList.remove('is-waiting');
+  State.onlineWait = {};
   var q = State.quiz[State.round];
   if (!q) return;
   var drawerId = State.order[State.round];
 
+  // オンラインの人の解答は届いた順に入っているので、解答者の順にそろえる
+  var order = State.answerers || [];
+  State.answers.sort(function (a, b) { return order.indexOf(a.playerId) - order.indexOf(b.playerId); });
+
+  fillRevealCard(q, drawerId === '__quick__' ? 'あなた' : playerName(drawerId), State.drawing);
+
+  /* --- 解答一覧（ホストが○×を手で上書きできる） --- */
+  renderRevealResults();
+
+  /* --- 協力モードのチーム記録 --- */
+  var isCoop = State.settings.mode !== 'vs' || drawerId === '__quick__';
+  var isLastRound = State.round >= State.order.length - 1;
+  var rec = $id('coopRecord');
+  if (isCoop) {
+    rec.hidden = false;
+    rec.textContent = (isLastRound ? 'これで最後の問題！ ' : '') +
+      '全 ' + State.order.length + ' 問中 ' + State.coop.correct + ' 問正解！';
+  } else {
+    rec.hidden = true;
+  }
+
+  /* --- 次へボタンの文言 ---
+     協力モードの最終問題では設定画面（S1）に戻る。押した先が分かるよう
+     「もう一度あそぶ」ではなく行き先そのものを書く。 */
+  var btn = $id('btnRevealNext');
+  var again = $id('btnRevealAgain');
+  again.hidden = true;
+  btn.classList.add('btn-primary');
+  if (!isLastRound) {
+    btn.textContent = '次の出題へ';
+  } else if (State.settings.mode === 'vs' && drawerId !== '__quick__') {
+    btn.textContent = '結果発表へ';
+  } else {
+    // 協力モードには結果発表画面が無いので、ここで再挑戦できるようにする
+    btn.textContent = '最初に戻る';
+    btn.classList.remove('btn-primary');
+    again.hidden = false;
+  }
+
+  showScreen('s4');
+  beep(hasAnyCorrect() ? 'correct' : 'wrong');
+}
+
+/* 正解発表の図鑑カード・解説文・出題者の絵（オンラインの子の端末でも使う） */
+function fillRevealCard(q, drawerLabel, drawing) {
   /* --- 図鑑カード --- */
   $id('revealNo').textContent = 'No.' + ('000' + q.id).slice(-3);
   $id('revealName').textContent = q.nameJa;
@@ -572,45 +697,8 @@ function showReveal() {
   $id('revealFlavor').textContent = q.flavorRaw;
 
   /* --- 出題者のイラスト --- */
-  $id('revealDrawer').textContent =
-    drawerId === '__quick__' ? 'あなた' : playerName(drawerId);
-  $id('revealDrawing').src = State.drawing || '';
-
-  /* --- 解答一覧（ホストが○×を手で上書きできる） --- */
-  renderRevealResults();
-
-  /* --- 協力モードのチーム記録 --- */
-  var isCoop = State.settings.mode !== 'vs' || drawerId === '__quick__';
-  var isLastRound = State.round >= State.order.length - 1;
-  var rec = $id('coopRecord');
-  if (isCoop) {
-    rec.hidden = false;
-    rec.textContent = (isLastRound ? 'これで最後の問題！ ' : '') +
-      '全 ' + State.order.length + ' 問中 ' + State.coop.correct + ' 問正解！';
-  } else {
-    rec.hidden = true;
-  }
-
-  /* --- 次へボタンの文言 ---
-     協力モードの最終問題では設定画面（S1）に戻る。押した先が分かるよう
-     「もう一度あそぶ」ではなく行き先そのものを書く。 */
-  var btn = $id('btnRevealNext');
-  var again = $id('btnRevealAgain');
-  again.hidden = true;
-  btn.classList.add('btn-primary');
-  if (!isLastRound) {
-    btn.textContent = '次の出題へ';
-  } else if (State.settings.mode === 'vs' && drawerId !== '__quick__') {
-    btn.textContent = '結果発表へ';
-  } else {
-    // 協力モードには結果発表画面が無いので、ここで再挑戦できるようにする
-    btn.textContent = '最初に戻る';
-    btn.classList.remove('btn-primary');
-    again.hidden = false;
-  }
-
-  showScreen('s4');
-  beep(hasAnyCorrect() ? 'correct' : 'wrong');
+  $id('revealDrawer').textContent = drawerLabel;
+  $id('revealDrawing').src = drawing || '';
 }
 
 function hasAnyCorrect() {
@@ -618,9 +706,27 @@ function hasAnyCorrect() {
 }
 
 function renderRevealResults() {
+  var rows = State.answers.map(function (a) {
+    return { who: a.playerId ? playerName(a.playerId) : 'みんな', text: a.text, correct: a.correct };
+  });
+  renderAnswerRows(rows, function (i) {
+    var a = State.answers[i];
+    a.correct = !a.correct;
+    a.manual = true;
+    saveState();
+    renderRevealResults();
+    recalcRoundScore();
+    if (ON) ON.hostBroadcast();   // 子の正解発表にも ○× の直しを反映する
+    beep('tap');
+  });
+  recalcRoundScore();
+}
+
+/* 解答一覧を描く。onFlip を渡さなければ ○× を直すボタンを出さない（子の端末） */
+function renderAnswerRows(rows, onFlip) {
   var wrap = $id('revealResults');
   wrap.innerHTML = '';
-  State.answers.forEach(function (a, i) {
+  rows.forEach(function (a, i) {
     var row = document.createElement('div');
     row.className = 'result-row ' + (a.correct ? 'is-ok' : 'is-ng');
 
@@ -631,7 +737,7 @@ function renderRevealResults() {
 
     var who = document.createElement('span');
     who.className = 'result-who';
-    who.textContent = a.playerId ? playerName(a.playerId) : 'みんな';
+    who.textContent = a.who;
     row.appendChild(who);
 
     var ans = document.createElement('span');
@@ -640,23 +746,17 @@ function renderRevealResults() {
     else { ans.innerHTML = '<span class="empty">（無回答）</span>'; }
     row.appendChild(ans);
 
-    var flip = document.createElement('button');
-    flip.type = 'button';
-    flip.className = 'btn btn-flip';
-    flip.textContent = a.correct ? '\u00d7 にする' : '\u25cb にする';
-    flip.addEventListener('click', function () {
-      a.correct = !a.correct;
-      a.manual = true;
-      saveState();
-      renderRevealResults();
-      recalcRoundScore();
-      beep('tap');
-    });
-    row.appendChild(flip);
+    if (onFlip) {
+      var flip = document.createElement('button');
+      flip.type = 'button';
+      flip.className = 'btn btn-flip';
+      flip.textContent = a.correct ? '\u00d7 にする' : '\u25cb にする';
+      flip.addEventListener('click', function () { onFlip(i); });
+      row.appendChild(flip);
+    }
 
     wrap.appendChild(row);
   });
-  recalcRoundScore();
 }
 
 /* ---------- 得点計算 ----------
@@ -710,7 +810,8 @@ function nextRound() {
     State.round++;
     saveState();
     var nextDrawer = State.order[State.round];
-    if (nextDrawer && nextDrawer !== '__quick__') {
+    // オンラインの出題者は自分の端末で描くので、この端末を手渡す合図は要らない
+    if (nextDrawer && nextDrawer !== '__quick__' && !isOnlinePlayer(nextDrawer)) {
       showInterstitial(playerName(nextDrawer), 'さんの番です',
         'ほかの人は解説文を見ないでください。', function () { startRound(); });
       showScreen('s2');
@@ -754,7 +855,7 @@ function buildRanking() {
     return {
       id: id,
       name: playerName(id),
-      remote: !!(p && p.remote),
+      online: !!(p && p.online),
       answer: sc.answer,
       draw: sc.draw,
       total: sc.answer + sc.draw
@@ -806,10 +907,10 @@ function renderRankList(elId, list, key, unit) {
     name.textContent = e.name;
     row.appendChild(name);
 
-    if (e.remote) {
+    if (e.online) {
       var badge = document.createElement('span');
       badge.className = 'rank-badge';
-      badge.textContent = '\uD83D\uDCE1';
+      badge.textContent = '\uD83C\uDF10';
       row.appendChild(badge);
     }
 
@@ -1024,13 +1125,24 @@ function makeTimer(wrapId, fillId, numId, seconds, onEnd) {
 
 var drawTimer = null;
 var answerTimer = null;
+var drawGraceTimer = null;
 
 function startDrawTimer() {
   stopDrawTimer();
+  clearTimeout(drawGraceTimer);
   if (!State.settings.timer) { $id('drawTimerWrap').hidden = true; return; }
   drawTimer = makeTimer('drawTimerWrap', 'drawTimerFill', 'drawTimerNum',
     timerSec('draw'), function () {
       drawTimer = null;
+      var drawerId = State.order[State.round];
+      var round = State.round;
+      if (isOnlinePlayer(drawerId)) {
+        // 出題者の端末も同じ秒数で締め切って絵を送ってくる。届かなければ白紙のまま進める
+        drawGraceTimer = setTimeout(function () {
+          if (State.screen === 's2' && State.round === round) receiveDrawing(drawerId, round, null);
+        }, 8000);
+        return;
+      }
       // 時間切れ：描けていなくてもそのままクイズへ
       State.drawing = DrawPad.toDataURL();
       saveState();
@@ -1065,8 +1177,7 @@ function screenLabel(id) {
   return { s15: 'データ読み込み', s2: 'お絵描き', s3: 'クイズ', s4: '正解発表', s5: '結果発表' }[id] || '';
 }
 
-function tryResume() {
-  var saved = loadSavedState();
+function tryResume(saved) {
   if (!saved) return false;
   // 設定画面のままだった／ゲームが始まっていないなら復帰不要（設定だけ引き継ぐ）
   if (!saved.quiz || !saved.quiz.length || saved.screen === 's1') {
@@ -1133,6 +1244,116 @@ function restoreScreen() {
 }
 
 /* =========================================================
+   オンラインプレイとの受け渡し（js/online.js から呼ばれる・親の端末だけ）
+   公開版だけの機能。online.js が無い版では呼ばれない。
+   ========================================================= */
+
+/* 子が部屋に入った（入り直した）。'ok' か 'full' を返す */
+function onlineGuestHello(pid, name) {
+  name = String(name || '').trim().slice(0, 12) || '名無し';
+  var p = playerById(pid);
+  if (p) {
+    p.name = name;
+    p.online = true;
+    toast(name + ' さんがつながりました');
+  } else {
+    var used = State.players.filter(function (x) { return x.online || (x.name || '').trim(); }).length;
+    if (used >= MAX_PLAYERS) return 'full';
+    p = { id: pid, name: name, remote: false, online: true };
+    // 最初から空欄の行があるので、空いていればそこに入れる
+    var empty = -1;
+    for (var i = 0; i < State.players.length; i++) {
+      if (!State.players[i].online && !(State.players[i].name || '').trim()) { empty = i; break; }
+    }
+    if (empty >= 0) State.players.splice(empty, 1, p);
+    else State.players.push(p);
+    toast(name + ' さんが参加しました');
+  }
+  saveState();
+  return 'ok';
+}
+
+function onlinePlayerBack(pid) {
+  if (State.screen === 's1') renderPlayers();
+  if (State.screen === 's2' && State.order[State.round] === pid) renderDrawScreen();
+}
+
+/* 子との接続が切れた。left=true なら自分で部屋を出た */
+function onlinePlayerDropped(pid, left) {
+  var p = playerById(pid);
+  if (!p) return;
+  toast(playerName(pid) + (left ? ' さんが部屋を出ました' : ' さんとの接続が切れました'));
+  if (State.screen === 's1') {
+    if (left) {
+      State.players.splice(State.players.indexOf(p), 1);
+      if (!State.players.length) State.players.push(makePlayer(''));
+      State.order = [];
+      $id('orderResult').hidden = true;
+    }
+    renderPlayers();
+  }
+  // 解答中に切れた人は無回答にして、ゲームは止めない
+  if (State.screen === 's3' && State.onlineWait && State.onlineWait[pid]) {
+    receiveOnlineAnswer(pid, State.round, '');
+  }
+  // 出題者なら「切れています」の表示に変える（とばすボタンで先へ進める）
+  if (State.screen === 's2' && State.order[State.round] === pid) renderDrawScreen();
+}
+
+function receiveOnlineAnswer(pid, round, text) {
+  if (State.screen !== 's3' || round !== State.round) return;
+  if (!State.onlineWait || !State.onlineWait[pid]) return;
+  delete State.onlineWait[pid];
+  pushAnswer(pid, text);
+  saveState();
+  if (State.answerIndex >= (State.answerers || []).length) finishAnswers();
+  else if (ON) ON.hostBroadcast();
+}
+
+/* 待ちきれない・時間切れ：まだのオンラインの人を無回答にする */
+function giveUpOnlineAnswers() {
+  if (State.screen !== 's3') return;
+  Object.keys(State.onlineWait || {}).forEach(function (pid) { pushAnswer(pid, ''); });
+  State.onlineWait = {};
+  saveState();
+  if (State.answerIndex >= (State.answerers || []).length) finishAnswers();
+  else if (ON) ON.hostBroadcast();
+}
+
+/* オンラインの出題者から絵が届いた（img=null は時間切れで届かなかった） */
+function receiveDrawing(pid, round, img) {
+  if (State.screen !== 's2' || round !== State.round || State.order[State.round] !== pid) return;
+  if (!$id('interstitial').hidden) return;
+  clearTimeout(drawGraceTimer);
+  stopDrawTimer();
+  State.drawing = img || null;
+  saveState();
+  beep('ok');
+  goToQuiz();
+}
+
+/* 出題者とつながらないときなど、この問題をとばして次へ */
+function skipRound() {
+  if (State.screen !== 's2') return;
+  clearTimeout(drawGraceTimer);
+  stopDrawTimer();
+  State.drawing = null;
+  State.answers = [];
+  toast((State.round + 1) + ' 問目をとばしました');
+  nextRound();
+}
+
+/* 親が部屋を閉じた：オンラインの人を名簿から外す */
+function onlineRoomClosed() {
+  State.players = State.players.filter(function (p) { return !p.online; });
+  if (!State.players.length) State.players.push(makePlayer(''));
+  State.order = [];
+  $id('orderResult').hidden = true;
+  saveState();
+  if (State.screen === 's1') renderPlayers();
+}
+
+/* =========================================================
    Service Worker（一度開けば、以後ネットが無くても起動できる）
    図鑑データ自体は dexsource.js が Cache Storage に保存する。
    ========================================================= */
@@ -1150,6 +1371,11 @@ function registerServiceWorker() {
 
 /* ---------------- 初期化 ---------------- */
 function initApp() {
+  /* 再読み込み前の状態は、いちばん最初に読んでおく。
+     下の renderRange() などが saveState() を呼ぶので、あとで読むと
+     既定の状態で上書きされたあとのものになり、復帰も設定の引き継ぎも効かない。 */
+  var bootSaved = loadSavedState();
+
   /* 端末に残っている名簿を先に反映する。
      renderPlayers() が saveRoster() を呼ぶので、必ずそれより前に読むこと
      （空の2行で名簿を上書きしてしまう）。進行中のゲームがあれば
@@ -1297,9 +1523,10 @@ function initApp() {
   DrawPad.init();
   initDexViewer();
   registerServiceWorker();
+  if (ON) ON.init();
 
   // リロード復帰（続きがあれば確認ダイアログを出す）
-  if (!tryResume()) {
+  if (!tryResume(bootSaved)) {
     renderRange(); renderPlayers(); renderMode(); renderTimer();
     showScreen('s1');
   }

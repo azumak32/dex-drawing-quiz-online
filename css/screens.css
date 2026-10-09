@@ -41,14 +41,14 @@
   font-size:16px; background:transparent;
 }
 .player-name:focus{ outline:none; border-bottom-color:var(--dex-red); }
-.remote-toggle{
+.online-badge{
   flex:0 0 auto;
   display:flex; align-items:center; gap:4px;
-  font-size:11px; font-weight:700; color:#888;
-  border:2px solid #ddd; border-radius:999px; padding:5px 9px;
-  background:#fafafa; cursor:pointer; user-select:none;
+  font-size:11px; font-weight:700; color:#a33;
+  border:2px solid #e5b5b5; border-radius:999px; padding:5px 9px;
+  background:#fff1f1; user-select:none;
 }
-.remote-toggle.is-on{ background:#e3f4ff; border-color:#4fc3f7; color:#0d6f96; }
+.online-badge.is-on{ background:#e3f4ff; border-color:#4fc3f7; color:#0d6f96; }
 .btn-del{
   flex:0 0 auto; width:32px; height:32px; padding:0;
   border-radius:50%; font-size:16px; font-weight:800;
@@ -181,7 +181,6 @@
   padding:14px; box-shadow:0 3px 0 rgba(0,0,0,.2);
 }
 .answerer-label{ margin:0 0 8px; font-size:15px; font-weight:800; color:var(--dex-red-dark); }
-.answerer-label .proxy{ font-size:12px; color:#0d6f96; margin-left:6px; }
 .answer-input{
   width:100%; padding:14px 12px;
   font-size:22px; font-weight:700; text-align:center;
@@ -427,3 +426,73 @@
 }
 /* 一覧は 1025 件まで伸びるので、上にも「もどる」を出す */
 .dex-back-top{ margin:0 0 10px; }
+
+/* ================= オンライン（公開版だけ・js/online.js） ================= */
+.panel[hidden]{ display:none; }
+.answer-image[hidden]{ display:none; }
+
+/* 開いたパネルの中の、閉じたアコーディオンの矢印（.accordion[open] summary が子孫にも効くため） */
+.online-log:not([open]) > summary::after{ content:"　▼"; }
+.online-join{ display:flex; flex-direction:column; gap:8px; margin-top:12px; }
+.online-input{
+  width:100%; padding:10px 12px; font-size:16px;
+  border:2px solid #ccc; border-radius:10px; background:#fff;
+}
+.online-input:focus{ outline:none; border-color:var(--dex-red); }
+.online-code{ font-size:20px; font-weight:800; letter-spacing:.2em; text-align:center; text-transform:uppercase; }
+.online-code-label{ margin:0; font-size:12px; color:#6b6b6b; text-align:center; }
+.online-room-code{
+  margin:2px 0 10px; text-align:center;
+  font-size:40px; font-weight:800; letter-spacing:.18em; color:var(--dex-red-dark);
+  font-family:"SF Mono", "Osaka-Mono", monospace;
+}
+.online-url-row{ display:flex; gap:6px; align-items:center; }
+.online-url-row .online-input{ flex:1 1 auto; min-width:0; font-size:12px; padding:8px; }
+.online-guests{ margin:10px 0; font-size:14px; font-weight:700; }
+.online-status{ margin:10px 0 0; font-size:13px; line-height:1.6; color:#0d6f96; font-weight:700; }
+.online-status:empty{ display:none; }
+.online-status.is-err{ color:var(--ng); }
+.netlog{
+  margin:0; padding:10px; white-space:pre-wrap; word-break:break-all;
+  font-size:11.5px; line-height:1.7; background:#fff; border:2px solid var(--paper-line); border-radius:8px;
+}
+
+/* 出題者がオンラインの人のとき：親の端末には解説文もキャンバスも出さない */
+.remote-draw{ display:none; padding:18px 16px; text-align:center; }
+.remote-draw-text{ font-size:18px; font-weight:800; line-height:1.6; }
+.remote-draw-note{ margin:8px 0 14px !important; font-size:12px; color:var(--lcd-dim); }
+#s2.is-remote-draw .remote-draw{ display:block; }
+#s2.is-remote-draw .lcd-flavor,
+#s2.is-remote-draw .canvas-wrap,
+#s2.is-remote-draw .tools,
+#s2.is-remote-draw #btnDrawDone{ display:none; }
+
+/* この端末の解答が終わり、オンラインの人を待っているとき */
+.online-wait{
+  display:none;
+  background:var(--paper); border:3px solid rgba(0,0,0,.2); border-radius:var(--radius);
+  padding:14px; box-shadow:0 3px 0 rgba(0,0,0,.2); text-align:center;
+}
+.online-wait-text{ margin:0 0 12px; font-size:15px; font-weight:800; color:var(--dex-red-dark); line-height:1.6; }
+#s3.is-waiting .online-wait{ display:block; }
+#s3.is-waiting .answer-area{ display:none; }
+
+/* 子の端末：親だけが押すボタンを隠す */
+.guest-only{ display:none; }
+.is-guest .guest-only{ display:block; }
+.is-guest .host-only{ display:none !important; }
+.guest-hint{ margin:12px 0; text-align:center; color:#fff; font-size:14px; font-weight:700; text-shadow:0 1px 0 rgba(0,0,0,.3); }
+
+/* S9 子の待合室 */
+.lcd-guest{ padding:22px 16px; text-align:center; margin-bottom:12px; }
+.guest-room{ font-size:12px; color:var(--lcd-dim); letter-spacing:.05em; }
+.guest-title{ margin-top:10px !important; font-size:22px; font-weight:800; line-height:1.5; }
+.guest-note{ margin-top:8px !important; font-size:13px; color:var(--lcd-dim); line-height:1.7; }
+.guest-note:empty{ display:none; }
+.guest-members{ display:flex; flex-wrap:wrap; gap:6px; justify-content:center; margin:0 0 12px; }
+.guest-member{
+  font-size:13px; font-weight:700; padding:5px 10px; border-radius:999px;
+  background:var(--paper); border:2px solid rgba(0,0,0,.15);
+}
+.guest-member.is-off{ opacity:.55; }
+#s9 .btn{ margin-top:10px; }

@@ -195,12 +195,16 @@ function loadRoster() {
 }
 
 function saveRoster(players) {
-  var list = (players || State.players || []).map(function (p) {
-    return { id: p.id, name: p.name || '', remote: !!p.remote };
+  var all = (players || State.players || []).map(function (p) {
+    return { id: p.id, name: p.name || '', remote: !!p.remote, online: !!p.online };
+  });
+  // オンラインで入ってきた人は、その回だけの参加者なので名簿には残さない（累積記録には残る）
+  var list = all.filter(function (p) { return !p.online; }).map(function (p) {
+    return { id: p.id, name: p.name, remote: p.remote };
   });
   try { localStorage.setItem(ROSTER_KEY, JSON.stringify(list)); } catch (e) {}
   // 名前を変えたら累積記録の表示名も追従させる（紐付けは id なので記録は消えない）
-  syncStatsNames(list);
+  syncStatsNames(all);
 }
 
 function clearRoster() {

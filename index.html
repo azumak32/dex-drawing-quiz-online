@@ -64,6 +64,42 @@
         <p class="howto-note"><b>協力モード</b>：みんなで相談して答えをひとつ出します。チームで何問正解できるかに挑戦。</p>
       </details>
 
+      <!-- オンライン（公開版だけ・js/online.js） -->
+      <details class="panel accordion" id="onlinePanel">
+        <summary class="panel-title">🌐 オンラインで遊ぶ<small id="onlineTag">（ためし版・別々の端末どうし）</small></summary>
+        <div id="onlineIdle">
+          <p class="hint">はなれた場所の人と、それぞれの端末で遊べます。ひとりが<b>部屋を作り（親）</b>、ほかの人は<b>部屋コードで参加（子）</b>します。ゲームの設定と進行は親の端末で行います。</p>
+          <button type="button" class="btn" id="btnOnlineHost">部屋を作る（親になる）</button>
+          <div class="online-join">
+            <input type="text" class="online-input" id="onlineName" placeholder="あなたの名前" maxlength="12" autocomplete="off" enterkeyhint="next">
+            <input type="text" class="online-input online-code" id="onlineCode" placeholder="部屋コード（6文字）" maxlength="6" autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false" enterkeyhint="go">
+            <button type="button" class="btn btn-primary" id="btnOnlineJoin">参加する（子になる）</button>
+          </div>
+        </div>
+        <div id="onlineHosting" hidden>
+          <p class="online-code-label">部屋コード</p>
+          <p class="online-room-code" id="onlineRoomCode">——</p>
+          <div class="online-url-row">
+            <input type="text" class="online-input" id="onlineRoomUrl" readonly>
+            <button type="button" class="btn btn-mini" id="btnOnlineCopyUrl">コピー</button>
+            <button type="button" class="btn btn-mini" id="btnOnlineShare" hidden>共有</button>
+          </div>
+          <p class="hint">参加した人は ④プレイヤー登録 に 🌐 印つきで入ります。<b>この端末で遊ぶ人も ④ に名前を入れてください。</b></p>
+          <p class="online-guests" id="onlineGuestList"></p>
+          <button type="button" class="btn btn-sub" id="btnOnlineClose">部屋を閉じる</button>
+        </div>
+        <p class="online-status" id="onlineStatus"></p>
+        <details class="panel-inner accordion online-log">
+          <summary class="panel-title">接続の記録（この端末）</summary>
+          <pre class="netlog" id="netlogSummary"></pre>
+          <p class="hint">つながった・つながらなかった回数を、この端末の中だけに記録しています（外部には送りません。名前も残しません）。</p>
+          <div class="row-2">
+            <button type="button" class="btn btn-sub" id="btnNetlogCopy">記録をコピー</button>
+            <button type="button" class="btn btn-sub" id="btnNetlogClear">記録を消す</button>
+          </div>
+        </details>
+      </details>
+
       <!-- 出題範囲 -->
       <details class="panel accordion">
         <summary class="panel-title">① 出題するポケモン<small>（世代・複数えらべます）</small></summary>
@@ -106,7 +142,7 @@
           <button type="button" class="btn" id="btnAddPlayer">＋ プレイヤーを追加</button>
           <button type="button" class="btn btn-dice" id="btnDice"><span class="dice-face" id="diceFace">🎲</span> 順番をきめる</button>
         </div>
-        <p class="hint">「リモート」を ON にすると、その人の解答画面に「（代理入力）」と表示されます（ビデオ通話参加者用）。</p>
+        <p class="hint">🌐 印の人は、オンラインで参加している人です（自分の端末で描いて、自分の端末で答えます）。</p>
         <div class="order-result" id="orderResult" hidden></div>
         <p class="hint">登録はこの端末におぼえます。次にひらいたときもそのまま使えます。</p>
         <div class="row-2">
@@ -160,6 +196,13 @@
       </div>
       <div class="timerbar" id="drawTimerWrap" hidden><div class="timerbar-fill" id="drawTimerFill"></div><span class="timerbar-num" id="drawTimerNum"></span></div>
 
+      <!-- 出題者がオンラインの人のとき（親の端末に出す） -->
+      <div class="lcd remote-draw">
+        <p class="remote-draw-text" id="remoteDrawText">—</p>
+        <p class="remote-draw-note">絵ができあがると、自動でクイズに進みます。</p>
+        <button type="button" class="btn btn-sub" id="btnSkipRound">この問題をとばす</button>
+      </div>
+
       <div class="canvas-wrap" id="canvasWrap">
         <canvas id="drawCanvas"></canvas>
       </div>
@@ -192,6 +235,11 @@
         <button type="button" class="btn btn-primary btn-jumbo" id="btnAnswerNext">こたえる</button>
         <button type="button" class="btn" id="btnAnswerSkip">わからない（パス）</button>
       </div>
+      <!-- この端末の解答が終わり、オンラインの人の解答を待っているとき -->
+      <div class="online-wait">
+        <p class="online-wait-text" id="onlineWaitText"></p>
+        <button type="button" class="btn" id="btnStopWaiting">待たずに答えあわせへ</button>
+      </div>
     </section>
 
     <!-- ================= S4 正解発表 ================= -->
@@ -218,8 +266,9 @@
       </div>
       <div class="results" id="revealResults"></div>
       <p class="coop-record" id="coopRecord" hidden></p>
-      <button type="button" class="btn btn-primary btn-jumbo" id="btnRevealAgain" hidden>同じ設定でもう一度あそぶ</button>
-      <button type="button" class="btn btn-primary btn-jumbo" id="btnRevealNext">次の出題へ</button>
+      <button type="button" class="btn btn-primary btn-jumbo host-only" id="btnRevealAgain" hidden>同じ設定でもう一度あそぶ</button>
+      <button type="button" class="btn btn-primary btn-jumbo host-only" id="btnRevealNext">次の出題へ</button>
+      <p class="guest-only guest-hint">親が次へ進めるのを待っています。</p>
     </section>
 
     <!-- ================= S5 結果発表 ================= -->
@@ -240,8 +289,9 @@
           <div class="rank-list" id="rankDraw"></div>
         </div>
       </div>
-      <button type="button" class="btn" id="btnStatsFromResult">🏆 これまでの累積ランキングを見る</button>
-      <div class="row-2">
+      <button type="button" class="btn host-only" id="btnStatsFromResult">🏆 これまでの累積ランキングを見る</button>
+      <p class="guest-only guest-hint">累積ランキングは親の端末に記録されます。</p>
+      <div class="row-2 host-only">
         <button type="button" class="btn btn-primary" id="btnPlayAgain">同じメンバーでもう一度</button>
         <button type="button" class="btn" id="btnBackToSetup">設定画面に戻る</button>
       </div>
@@ -341,6 +391,19 @@
       <button type="button" class="btn btn-primary btn-jumbo" id="btnStatsBack">◀ もどる</button>
     </section>
 
+    <!-- ================= S9 オンラインの子の待合室 ================= -->
+    <section class="screen" id="s9">
+      <div class="lcd lcd-guest">
+        <p class="guest-room" id="guestRoom">部屋 —</p>
+        <p class="guest-title" id="guestTitle">…</p>
+        <p class="guest-note" id="guestNote"></p>
+      </div>
+      <div class="answer-image" id="guestImageWrap" hidden><img id="guestImage" alt="出題者が描いたイラスト"></div>
+      <div class="guest-members" id="guestMembers"></div>
+      <button type="button" class="btn btn-primary btn-jumbo" id="btnGuestRetry" hidden>つなぎ直す</button>
+      <button type="button" class="btn btn-sub" id="btnGuestLeave">部屋を出る</button>
+    </section>
+
   </main>
 
   <!-- ===== 権利表記フッター（全画面共通） ===== -->
@@ -389,6 +452,7 @@
 <script src="js/canvas.js"></script>
 <script src="js/sfx.js"></script>
 <script src="js/dexviewer.js"></script>
+<script src="js/online.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>
